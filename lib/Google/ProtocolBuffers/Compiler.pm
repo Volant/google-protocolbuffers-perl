@@ -221,7 +221,7 @@ serviceBody :   "{" <commit> ( rpc | option | ";" )(s?) "}"
             |   <error?><reject>
 
 rpc         :   "rpc" <commit> ident "(" userType ")" "returns" "(" userType ")" rpcOptions(?) ";"
-                { $return = [ rpc => $item{ident}, $item{userType} ]; }
+                { $return = [ rpc => $item{ident}, $item[5], $item[9] ]; }
             |   <error?> <reject>
 
 rpcOptions  :   "{" option(s?) "}"
@@ -475,7 +475,7 @@ sub parse {
         die "" unless defined $res;
 
         ## start each file from empty package
-        push @parse_tree, [package=>''];
+        push @parse_tree, [package=>''] unless grep { $_->[0] eq 'package' } @$res;
         foreach my $decl (@$res) {
             if ($decl->[0] eq 'import') {
                 push @import_files, ($filename, $decl->[1]);
@@ -499,7 +499,7 @@ sub parse {
     ## For each field of a user type a fully quilified type name must be found.
     ## For each default value defined by a constant (enum), a f.q.n of enum value must be found
     ##
-    foreach my $kind (qw/message group enum/) {
+    foreach my $kind (qw/message group enum service/) {
         foreach my $fqname ($symbol_table->lookup_names_of_kind($kind)) {
             $self->{types}->{$fqname} = { kind => $kind, fields => [], extensions => [] };
         }
@@ -553,8 +553,9 @@ sub collect_names {
             $context = $symbol_table->set_package($decl->[1]);
         } elsif ($kind eq 'message') {
             ## message may include nested messages/enums/groups
-            my $child_context = $symbol_table->add('message' => $decl->[1], $context);
-            $self->collect_names($child_context, $decl->[2]);
+            my $idx = $self->{'grammar_ver'} == 3 ? 1 : 1;
+            my $child_context = $symbol_table->add('message' => $decl->[$idx], $context);
+            $self->collect_names($child_context, $decl->[$idx + 1]);
         } elsif ($kind eq 'enum') {
             my $child_context = $symbol_table->add('enum' => $decl->[1], $context);
             $self->collect_names($child_context, $decl->[2]);
@@ -576,7 +577,8 @@ sub collect_names {
             ##      extend B { required int32 foo = 200  };
             ##      // Invalid! foo is already declared!
             ##
-            $symbol_table->add('field' => $decl->[2], $context);
+            my $idx = $self->{'grammar_ver'} == 3 ? 2 : 3;
+            $symbol_table->add('field' => $decl->[$idx], $context);
         } elsif ($kind eq 'enumField') {
             $symbol_table->add('enum_field' => $decl->[1], $context);
         } elsif ($kind eq 'service') {
@@ -585,7 +587,6 @@ sub collect_names {
             warn $kind;
         }
     }
-#    warn Dumper $symbol_table;
 }
 
 sub collect_fields {
@@ -644,29 +645,30 @@ sub collect_fields {
             # $decl = ['field' => $label, $type, $ident, $item{intLit}, $item{fOptList}] }
             my $name;
             my $fields_list;
+            my $idx = $self->{'grammar_ver'} == 3 ? 1 : 2;
+
             if ($is_extension) {
                 ## for extensions, fully quilified names of fields are used,
                 ## because they may be declared anywhere - even in another package
                 $fields_list = $self->{types}->{$destination_type_name}->{extensions};
-                $name = $symbol_table->lookup('field' => $decl->[2], $context);
+                $name = $symbol_table->lookup('field' => $decl->[$idx + 1], $context);
             } else {
                 ## regualar fields are always immediate children of their type
                 $fields_list = $self->{types}->{$destination_type_name}->{fields};
-                $name = $decl->[2];
+                $name = $decl->[$idx + 1];
             }
 
             my ($type_name, $kind);
-            if (exists $primitive_types{$decl->[1]}) {
-                $type_name = $primitive_types{$decl->[1]};
+            if (exists $primitive_types{$decl->[$idx]}) {
+                $type_name = $primitive_types{$decl->[$idx]};
             } else {
-                warn "looking up for $decl->[2], $context";
-                ($type_name, $kind) = $symbol_table->lookup_symbol($decl->[2], $context);
+                ($type_name, $kind) = $symbol_table->lookup_symbol($decl->[$idx], $context);
                 die $kind unless $kind eq 'message' || $kind eq 'group' || $kind eq 'enum';
             }
 
-            my $field_number = $decl->[3];
+            my $field_number = $decl->[$idx + 2];
 
-            my $default_value = $decl->[4];
+            my $default_value = $decl->[$idx + 3];
             if ($default_value && !ref $default_value) {
                 if ($default_value eq 'true') {
                     $default_value = { value => 1 };
@@ -690,7 +692,27 @@ sub collect_fields {
             my $fields_list = $self->{types}->{$destination_type_name}->{fields};
             push @{$fields_list}, [$decl->[1], $decl->[2]];
         } elsif ($kind eq 'service') {
-            #warn Dumper $decl;
+            my $child_context = ($context) ? "$context.$decl->[1]" : $decl->[1];
+            $self->collect_fields($child_context, $decl->[2], $child_context);
+        } elsif ($kind eq 'rpc') {
+            my ($in, $out, $kind);
+
+            if (exists $primitive_types{$decl->[2]}) {
+                $in = $primitive_types{$decl->[2]};
+            } else {
+                ($in, $kind) = $symbol_table->lookup_symbol($decl->[2], $context);
+            }
+
+            if (exists $primitive_types{$decl->[3]}) {
+                $out = $primitive_types{$decl->[3]};
+            } else {
+                ($out, $kind) = $symbol_table->lookup_symbol($decl->[3], $context);
+            }
+
+            my $name = $decl->[1];
+
+            my $fields_list = $self->{types}->{$destination_type_name}->{fields};
+            push @$fields_list, [undef, $name, $in, $out];
         } else {
             warn $kind;
         }
@@ -771,7 +793,7 @@ sub add {
         $self->_add($kind, $name, $context);
         return $fqn;
     } else {
-    	return $self->_add($kind, $name, $context);
+        return $self->_add($kind, $name, $context);
     }
 }
 
@@ -816,7 +838,7 @@ sub lookup {
 
     my ($fqn, $k) = $self->lookup_symbol($name, $context);
     unless ($kind eq $k) {
-    	confess "Error: while looking for '$kind' named '$name' in '$context', a '$k' named '$fqn' was found";
+        confess "Error: while looking for '$kind' named '$name' in '$context', a '$k' named '$fqn' was found";
     }
     return $fqn;
 }

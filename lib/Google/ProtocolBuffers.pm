@@ -33,11 +33,16 @@ sub parse {
 ## Currently, it's in the same order as text in proto file
 ## "optional" (LABEL) int32 (type) foo (name) = 1 (number) [default=...]
 use constant {
-    F_LABEL     => 0,
-    F_TYPE      => 1,
-    F_NAME      => 2,
-    F_NUMBER    => 3,
-    F_DEFAULT   => 4,
+    F_LABEL       => 0,
+    F_TYPE        => 1,
+    F_NAME        => 2,
+    F_NUMBER      => 3,
+    F_DEFAULT     => 4,
+};
+
+use constant {
+    F_ARG_TYPE    => 2,
+    F_RESULT_TYPE => 3,
 };
 
 sub _parse {
@@ -45,7 +50,7 @@ sub _parse {
     my $source = shift;
     my $opts = shift;
 
-    require 'Google/ProtocolBuffers/Compiler.pm';
+    require 'Google/ProtocolBuffers/Compiler.pm'; ## no critic
     my $types = Google::ProtocolBuffers::Compiler->parse($source, $opts);
 
     ##
@@ -70,6 +75,26 @@ sub _parse {
 
         if ($kind eq 'enum') {
             next;
+        } elsif ($kind eq 'service') {
+            ##
+            ## Replace proto type names by Perl classes names
+            ##
+            foreach my $f (@{$desc->{fields}}) {
+                my $type = $f->[F_ARG_TYPE];
+                if ($type !~ /^\d+$/) {
+                    ## not a primitive type
+                    $f->[F_ARG_TYPE] = $self->_get_class_name_for($type, $opts);
+                }
+
+                $type = $f->[F_RESULT_TYPE];
+                if ($type !~ /^\d+$/) {
+                    ## not a primitive type
+                    $f->[F_RESULT_TYPE] = $self->_get_class_name_for($type, $opts);
+                }
+            }
+
+            push @fields, @{$desc->{fields}};
+
         } elsif ($kind eq 'group') {
             push @fields, @{$desc->{fields}};
         } elsif ($kind eq 'message') {
@@ -133,7 +158,7 @@ sub _parse {
                 ## this default is an enum value
                 my ($enum_name, $enum_field_name) = ($default_value =~ /(.*)\.(\w+)$/);
                 my $class_name = $self->_get_class_name_for($enum_name, $opts);
-                no strict 'refs';
+                no strict 'refs'; ## no critic
                 $f->[F_DEFAULT] = &{"${class_name}::$enum_field_name"};
                 use strict;
             }
@@ -147,16 +172,18 @@ sub _parse {
             $self->create_message($class_name, \@fields, $opts);
         } elsif ($kind eq 'group') {
             $self->create_group($class_name, \@fields, $opts);
+        } elsif ($kind eq 'service') {
+            $self->create_service($class_name, \@fields, $opts);
         }
         push @created_classes, $class_name;
     }
 
     ## Generate Perl code of created classes
     if ($opts->{generate_code}) {
-        require 'Google/ProtocolBuffers/CodeGen.pm';
+        require 'Google/ProtocolBuffers/CodeGen.pm'; ## no critic
         my $fh;
         if (!ref($opts->{generate_code})) {
-            open($fh, ">$opts->{generate_code}")
+            open($fh, ">", $opts->{generate_code})
                 or die "Can't write to '$opts->{generate_code}': $!";
         } else {
             $fh = $opts->{generate_code};
@@ -186,6 +213,91 @@ HEADER
         print $fh "}\n1;\n";
     }
     return @created_classes;
+}
+
+sub create_service {
+    my $self = shift;
+    my $class_name = shift;
+    my $fields = shift;
+    my $opts = shift;
+
+    return $self->_create_service(
+        $class_name, $fields, $opts,
+        'Google::ProtocolBuffers::Service'
+    );
+}
+
+sub _create_service {
+    my $self = shift;
+    my $class_name = shift;
+    my $fields = shift;
+    my $opts = shift;
+    my $base_class = shift;
+
+    ##
+    ## Sanity checks
+    ##  1. Class name must be a valid Perl class name
+    ##  (should we check that this class doesn't exist yet?)
+    ##
+    die "Invalid class name: '$class_name'"
+        unless $class_name =~ /^[a-z_]\w*(?:::[a-z_]\w*)*$/i;
+
+    ##
+    ##
+    my (%field_names, %field_numbers);
+    foreach my $f (@$fields) {
+        my ($label, $name, $in, $out) = @$f;
+        die Dumper $f unless $name;
+
+        ##
+        ## field names must be valid identifiers and be unique
+        ##
+        die "Invalid field name: '$name'"
+            unless $name && $name =~ /^\[?[a-z_][\w\.]*\]?$/i;
+        if ($field_names{$name}++) {
+            die "Field '$name' is defined more than once";
+        }
+
+        ## type is either a number (for primitive types)
+        ## or a class name. Can't check that complex $type
+        ## is valid, because it may not exist yet.
+        die "Field '$name' doesn't has a type" unless $in || $out;
+        if ($in =~/^\d+$/) {
+            ## ok, this is an ID of primitive type
+        } else {
+            die "Type '$in' is not valid Perl class name"
+                unless $in =~ /^[a-z_]\w*(?:::[a-z_]\w*)*$/i;
+        }
+    }
+
+
+    ## Make a copy of values and sort them so that field_numbers increase,
+    ## this is a requirement of protocol
+    ## Postitional addressation of field parts is sucks, TODO: replace by hash
+#    my @field_list               = sort { $a->[F_NUMBER] <=> $b->[F_NUMBER] } map { [@$_] } @$fields;
+#    my %fields_by_field_name     = map { $_->[F_NAME]   => $_ } @field_list;
+#    my %fields_by_field_number   = map { $_->[F_NUMBER] => $_ } @field_list;
+
+    no strict 'refs'; ## no critic
+    @{"${class_name}::ISA"} = $base_class;
+#    *{"${class_name}::_pb_fields_list"}         = sub { \@field_list              };
+#    *{"${class_name}::_pb_fields_by_name"}      = sub { \%fields_by_field_name    };
+#    *{"${class_name}::_pb_fields_by_number"}    = sub { \%fields_by_field_number  };
+    use strict;
+
+    if ($opts->{create_accessors}) {
+        no strict 'refs'; ## no critic
+        push @{"${class_name}::ISA"}, 'Class::Accessor';
+        *{"${class_name}::get"} = \&Google::ProtocolBuffers::get;
+        *{"${class_name}::set"} = \&Google::ProtocolBuffers::set;
+        use strict;
+
+        if ($opts->{follow_best_practice}) {
+            $class_name->follow_best_practice;
+        }
+#        my @accessors = grep { /^[a-z_]\w*$/i } map { $_->[2] } @$fields;
+#        $class_name->mk_accessors(@accessors);
+    }
 }
 
 # Google::ProtocolBuffers->create_message(
@@ -270,7 +382,7 @@ sub _create_message_or_group {
                 unless $type_name =~ /^[a-z_]\w*(?:::[a-z_]\w*)*$/i;
         }
 
-        die "Unknown label value: $label" 
+        die "Unknown label value: $label"
             if $label && ($label != LABEL_OPTIONAL && $label != LABEL_REQUIRED && $label!= LABEL_REPEATED);
     }
 
@@ -282,7 +394,7 @@ sub _create_message_or_group {
     my %fields_by_field_name     = map { $_->[F_NAME]   => $_ } @field_list;
     my %fields_by_field_number   = map { $_->[F_NUMBER] => $_ } @field_list;
 
-    no strict 'refs';
+    no strict 'refs'; ## no critic
     @{"${class_name}::ISA"} = $base_class;
     *{"${class_name}::_pb_fields_list"}         = sub { \@field_list              };
     *{"${class_name}::_pb_fields_by_name"}      = sub { \%fields_by_field_name    };
@@ -290,7 +402,7 @@ sub _create_message_or_group {
     use strict;
 
     if ($opts->{create_accessors}) {
-        no strict 'refs';
+        no strict 'refs'; ## no critic
         push @{"${class_name}::ISA"}, 'Class::Accessor';
         *{"${class_name}::get"} = \&Google::ProtocolBuffers::get;
         *{"${class_name}::set"} = \&Google::ProtocolBuffers::set;
@@ -329,7 +441,7 @@ sub create_enum {
     }
 
     ## base class and constants export
-    no strict 'refs';
+    no strict 'refs'; ## no critic
     @{"${class_name}::ISA"} = "Google::ProtocolBuffers::Enum";
     %{"${class_name}::EXPORT_TAGS"} = ('constants'=>[]);
     use strict;
@@ -337,7 +449,7 @@ sub create_enum {
     ## create the constants
     foreach my $f (@$fields) {
         my ($name, $value) = @$f;
-        no strict 'refs';
+        no strict 'refs'; ## no critic
         *{"${class_name}::$name"}   = sub { $value };
         push @{ ${"${class_name}::EXPORT_TAGS"}{'constants'} }, $name;
         push @{"${class_name}::EXPORT_OK"}, $name;
@@ -346,7 +458,7 @@ sub create_enum {
 
     ## create a copy of fields for introspection/code generation
     my @fields = map { [@$_] } @$fields;
-    no strict 'refs';
+    no strict 'refs'; ## no critic
     *{"${class_name}::_pb_fields_list"} = sub { \@fields };
 
 }
@@ -461,6 +573,10 @@ sub _get_class_name_for{
         return join("::", @idents);
     }
 }
+
+package Google::ProtocolBuffers::Service;
+
+*getPerlCode            = \&Google::ProtocolBuffers::CodeGen::generate_code_of_service;
 
 package Google::ProtocolBuffers::Message;
 no warnings 'once';

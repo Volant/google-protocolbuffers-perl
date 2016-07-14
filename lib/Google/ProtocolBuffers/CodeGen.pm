@@ -77,6 +77,15 @@ $fields_text
 CODE
 }
 
+sub generate_code_of_service {
+    my $self = shift;
+    my $opts = shift;
+
+    return <<CODE;
+    ## CODE
+CODE
+}
+
 sub generate_code_of_message_or_group {
     my $self = shift;
     my $opts = shift;
