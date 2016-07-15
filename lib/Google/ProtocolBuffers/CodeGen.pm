@@ -81,8 +81,31 @@ sub generate_code_of_service {
     my $self = shift;
     my $opts = shift;
 
+    my $class_name = ref($self) || $self;
+
+    my $params = "";
+    foreach my $f (@{ $self->_pb_fields_list }) {
+        my (undef, $name, $in, $out) = @$f;
+
+        $params .= <<PARAMS;
+                [
+                    undef,
+                    '$name',
+                    '$in',
+                    '$out',
+                ],
+PARAMS
+    }
+
     return <<CODE;
-    ## CODE
+    unless ($class_name->can('_pb_fields_list')) {
+        Google::ProtocolBuffers->create_service(
+            '$class_name',
+            [
+$params
+            ],
+        );
+    }
 CODE
 }
 

@@ -242,61 +242,32 @@ sub _create_service {
     die "Invalid class name: '$class_name'"
         unless $class_name =~ /^[a-z_]\w*(?:::[a-z_]\w*)*$/i;
 
+    no strict 'refs'; ## no critic
+    @{"${class_name}::ISA"} = $base_class;
+    my @fields_list = @$fields;
+    *{"${class_name}::_pb_fields_list"} = sub { \@fields_list };
+    use strict;
+
     ##
     ##
     my (%field_names, %field_numbers);
     foreach my $f (@$fields) {
-        my ($label, $name, $in, $out) = @$f;
-        die Dumper $f unless $name;
+        my (undef, $call_name, $in, $out) = @$f;
+        die Dumper $f unless $call_name;
 
-        ##
-        ## field names must be valid identifiers and be unique
-        ##
-        die "Invalid field name: '$name'"
-            unless $name && $name =~ /^\[?[a-z_][\w\.]*\]?$/i;
-        if ($field_names{$name}++) {
-            die "Field '$name' is defined more than once";
-        }
+        die "Field '$in' doesn't has a type" unless $in;
+        die "Type '$in' is not valid Perl class name"
+            unless $in =~ /^[a-z_]\w*(?:::[a-z_]\w*)*$/i;
 
-        ## type is either a number (for primitive types)
-        ## or a class name. Can't check that complex $type
-        ## is valid, because it may not exist yet.
-        die "Field '$name' doesn't has a type" unless $in || $out;
-        if ($in =~/^\d+$/) {
-            ## ok, this is an ID of primitive type
-        } else {
-            die "Type '$in' is not valid Perl class name"
-                unless $in =~ /^[a-z_]\w*(?:::[a-z_]\w*)*$/i;
-        }
-    }
+        die "Field '$out' doesn't has a type" unless $out;
+        die "Type '$out' is not valid Perl class name"
+            unless $out =~ /^[a-z_]\w*(?:::[a-z_]\w*)*$/i;
 
-
-    ## Make a copy of values and sort them so that field_numbers increase,
-    ## this is a requirement of protocol
-    ## Postitional addressation of field parts is sucks, TODO: replace by hash
-#    my @field_list               = sort { $a->[F_NUMBER] <=> $b->[F_NUMBER] } map { [@$_] } @$fields;
-#    my %fields_by_field_name     = map { $_->[F_NAME]   => $_ } @field_list;
-#    my %fields_by_field_number   = map { $_->[F_NUMBER] => $_ } @field_list;
-
-    no strict 'refs'; ## no critic
-    @{"${class_name}::ISA"} = $base_class;
-#    *{"${class_name}::_pb_fields_list"}         = sub { \@field_list              };
-#    *{"${class_name}::_pb_fields_by_name"}      = sub { \%fields_by_field_name    };
-#    *{"${class_name}::_pb_fields_by_number"}    = sub { \%fields_by_field_number  };
-    use strict;
-
-    if ($opts->{create_accessors}) {
-        no strict 'refs'; ## no critic
-        push @{"${class_name}::ISA"}, 'Class::Accessor';
-        *{"${class_name}::get"} = \&Google::ProtocolBuffers::get;
-        *{"${class_name}::set"} = \&Google::ProtocolBuffers::set;
+        no strict 'refs';
+        *{"${class_name}::$call_name"} = sub {
+            printf ("RPC call '$call_name'\n");
+        };
         use strict;
-
-        if ($opts->{follow_best_practice}) {
-            $class_name->follow_best_practice;
-        }
-#        my @accessors = grep { /^[a-z_]\w*$/i } map { $_->[2] } @$fields;
-#        $class_name->mk_accessors(@accessors);
     }
 }
 
