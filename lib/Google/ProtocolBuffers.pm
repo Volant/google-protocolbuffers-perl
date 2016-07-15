@@ -263,9 +263,16 @@ sub _create_service {
         die "Type '$out' is not valid Perl class name"
             unless $out =~ /^[a-z_]\w*(?:::[a-z_]\w*)*$/i;
 
-        no strict 'refs';
+        no strict 'refs'; ## no critic
         *{"${class_name}::$call_name"} = sub {
-            printf ("RPC call '$call_name'\n");
+            my ($class, $arg) = @_;
+            return unless $arg;
+
+            printf ("RPC call '\$client->call($call_name);'\n");
+
+            use Net::GRPC::Client;
+            my $client = Net::GRPC::Client->new();
+            return $client->call($call_name, $arg);
         };
         use strict;
     }
